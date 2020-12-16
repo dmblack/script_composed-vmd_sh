@@ -7,6 +7,7 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 # Some Defaults
 # This is the name of our default disk image.
 DEFAULT_DISK=root.img
+DEFAULT_DISK_SIZE=8
 # This is our default boot.
 DEFAULT_BOOT=/bsd.rd
 
@@ -19,7 +20,7 @@ STATIC_PREFIX_USERNAME=_vmd_
 
 err () {
 	echo "${0##*/}: ${1}" 1>&2
-	if [ $DEBUG -eq 1 ]; then
+	if [[ $DEBUG -eq 1 ]]; then
 		return 0
 	else
   	return ${2:-1}
@@ -32,7 +33,7 @@ usage () {
 [-i IP] \
 [-M MACPREFIX] \
 [-m MEMORY(MB)] \
-[-n NETCONF File] \
+[-N NETCONF File] \
 [-S SWITCH] \
 [-s SUBNET] \
 name" 1>&2
@@ -41,7 +42,7 @@ name" 1>&2
 	echo "	-i	IP (32)						123"
 	echo "	-M	MACPREFIX						AAAAAAA[###]"
 	echo "	-m	MEMORY (MB)					1024"
-	echo "	-n	NETCONF File				/etc/vm.conf"
+	echo "	-N	NETCONF File				/etc/vm.conf"
 	echo "				Should contain the name of your switch.."
 	echo "	-S	SWITCH (UPLINK)			uplink-official"
 	echo "	-s	SUBNET (24)				20"
@@ -56,7 +57,7 @@ privsep () {
 		shift 2;
 	fi
   
-	if [ $DEBUG -eq 1 ]; then
+	if [[ $DEBUG -eq 1 ]]; then
 		echo "DEBUG: su -s /bin/sh ${_user} -c '$@'"
 	else
 	  eval su -s /bin/sh ${_user} -c "'$@'" || _rc=$?
@@ -71,8 +72,6 @@ while getopts ${optargstring} arg; do
 	case ${arg} in
 	D)
 		DEBUG=1
-		echo "Debug / Dry Run"
-		shift 2
 		;;
 	d)
 		INPUT_DOMAIN=${OPTARG}
@@ -101,7 +100,7 @@ while getopts ${optargstring} arg; do
 	esac
 done
 
-if [ $DEBUG -eq 1 ]; then
+if [[ $DEBUG -eq 1 ]]; then
 	shift 15
 else
 	shift 14
@@ -109,6 +108,7 @@ fi
 
 (($(id -u) != 0)) && err "root privilege is required."
 
+echo $#
 case $# in
   0) usage;;
 	1) INPUT_NAME=$1;;
@@ -118,21 +118,21 @@ esac
 FINAL_USERNAME=$STATIC_PREFIX_USERNAME$INPUT_NAME
 
 # Check this username does not already exist.
-if [ -d /home/$FINAL_USERNAME ]; then
+if [[ -d /home/$FINAL_USERNAME ]]; then
 	err "A vm of this name already exists."
 fi
 
 FINAL_ID=$STATIC_PREFIX_UID$INPUT_SUBNET$INPUT_IP
 
 # Check this UID does not already exist.
-if [ $(grep -i ${FINAL_ID} /etc/passwd | wc -l) -eq 1 ]; then
+if [[ $(grep -i ${FINAL_ID} /etc/passwd | wc -l) -eq 1 ]]; then
 	err "A prefix, subnet, and ip, for this host already exist.
 	${FINAL_ID}."
 fi
 
 FINAL_SWITCH=$INPUT_SWITCH
-if [ $(grep -i ${FINAL_SWITCH} ${INPUT_NETCONFIG} | \
-	wc -l) -ne 1 ]; then
+if [[ $(grep -i ${FINAL_SWITCH} ${INPUT_NETCONFIG} | \
+	wc -l) -ne 1 ]]; then
 	err "A switch with this name does not exist."
 fi
 
@@ -151,8 +151,9 @@ privsep -u root useradd \
   $FINAL_USERNAME
 
 # As the user, create the VM Disk.
-privsep -u $FINAL_USERNAME vmctl create -s "${DEFAULT_DISK_SIZE}G" \
-	$DEFAULT_DISK
+privsep -u $FINAL_USERNAME vmctl \
+	create -s "${DEFAULT_DISK_SIZE}G" \
+	/home/$FINAL_USERNAME/$DEFAULT_DISK
 
 	CONFIG_TEMPLATE="vm \"$FINAL_FQDN\" {\n \
 \tdisable\n \
@@ -171,9 +172,11 @@ echo $CONFIG_TEMPLATE > "/tmp/${FINAL_FQDN}.conf"
 # We do not privsep this function yet...
 # now we do.. but should we? this is a bit like running echo, cat,
 # grep..
-if [[ $(privsep -u $FINAL_USERNAME \
-	vmd -f /tmp/${FINAL_FQDN}.conf -n) == "configuration OK" ]]; then
+if privsep -u $FINAL_USERNAME vmd \
+	-f /tmp/${FINAL_FQDN}.conf -n; then
+  privsep -u root install -F -o 0 -g 0 -m 0750 /tmp/${FINAL_FQDN}.conf \
+		/etc/vm.d/machine/${FINAL_FQDN}.conf
 else
-	echo "ntok";
+	err "VM Configuratoin failed vmd config test.";
 fi
 
